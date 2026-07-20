@@ -1,0 +1,76 @@
+{
+  "version": 6,
+  "guild_id": 0,
+  "config_channel_id": 0,
+  "config_message_id": 0,
+  "channels": {
+    "access": 0,
+    "business_application_panel": 0,
+    "bank": 0,
+    "business": 0,
+    "government_fines": 0,
+    "business_applications": 0,
+    "logs": 0,
+    "bridge": 0
+  },
+  "roles": {
+    "bank_access": [],
+    "fine_issuers": []
+  },
+  "users": {
+    "admins": []
+  },
+  "branding": {
+    "name": "FunFernus Bank",
+    "color": "F2A93B",
+    "banners": {
+      "access": "",
+      "bank": "",
+      "business": "",
+      "business_application": "",
+      "government_fines": ""
+    }
+  },
+  "texts": {
+    "access": {
+      "title": "Получить доступ к банку",
+      "description": "Получите код в Minecraft командой /discordshop link и введите его через кнопку ниже."
+    },
+    "business_application": {
+      "title": "Открытие бизнеса",
+      "description": "Подайте заявку на создание бизнеса через удобную форму."
+    },
+    "bank": {
+      "title": "FunFernus Bank",
+      "description": "Личный кабинет, переводы, штрафы, казна и история операций."
+    },
+    "business": {
+      "title": "Управление бизнесом",
+      "description": "Финансы, товары, категории, продвижение и оформление, открываемое за продажи."
+    },
+    "government_fines": {
+      "title": "Government • Штрафы",
+      "description": "Выдача штрафов уполномоченными ролями и администраторами банка."
+    }
+  },
+  "features": {
+    "transfers": true,
+    "fines": true,
+    "business_management": true,
+    "treasury": true,
+    "history": true
+  },
+  "finance": {
+    "transfer_fee_percent": 5.0,
+    "transfer_minimum_fee": 1,
+    "treasury_quick_amounts": [
+      100,
+      500,
+      1000,
+      5000
+    ]
+  },
+  "recent_recipients": {},
+  "panels": {},
+  "posted": {}
+}
