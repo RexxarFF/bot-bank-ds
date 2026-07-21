@@ -206,10 +206,26 @@ def profile_embed(client: Any, data: dict[str, Any]) -> discord.Embed:
     result.add_field(name="Баланс", value=f"**{money(data.get('balance'))}**", inline=True)
     result.add_field(name="Штрафы", value=str(data.get("unpaidFines", 0)), inline=True)
     if data.get("frozen"):
-        result.add_field(name="Счёт заморожен", value=truncate(data.get("freezeReason") or "Причина не указана", 500), inline=False)
-    business = data.get("business")
-    if business:
-        result.add_field(name="Бизнес", value=f"**{business.get('name')}**\nБаланс: {money(business.get('balance'))}", inline=False)
+        freeze_text = truncate(data.get("freezeReason") or "Причина не указана", 500)
+        if data.get("frozenUntil"):
+            freeze_text += f"\nДо: {discord_time(data.get('frozenUntil'), 'F')} ({discord_time(data.get('frozenUntil'), 'R')})"
+        result.add_field(name="🔒 Счёт заморожен", value=freeze_text, inline=False)
+    if data.get("businessBanned"):
+        result.add_field(
+            name="⛔ Доступ к бизнесам заблокирован",
+            value=truncate(data.get("businessBanReason") or "Причина не указана", 500),
+            inline=False,
+        )
+    businesses = list(data.get("businesses", []) or [])
+    if not businesses and data.get("business"):
+        businesses = [data.get("business")]
+    if businesses:
+        lines = []
+        for item in businesses[:3]:
+            marker = "🔒 " if item.get("frozen") else ""
+            suffix = " — заморожен" if item.get("frozen") else ""
+            lines.append(f"{marker}**{item.get('name', '—')}** — {money(item.get('balance'))}{suffix}")
+        result.add_field(name=f"Бизнесы ({len(businesses)}/{data.get('maxBusinesses', len(businesses))})", value="\n".join(lines), inline=False)
     result.set_footer(text="Чтобы получить свежий баланс, снова нажмите «Открыть банк» в банковском канале.")
     return result
 
@@ -228,6 +244,10 @@ class PersonalCabinetView(OwnedView):
     def __init__(self, client: Any, owner_id: int, data: dict[str, Any]) -> None:
         super().__init__(client, owner_id)
         self.data = data
+        if data.get("frozen"):
+            for child in self.children:
+                if getattr(child, "label", "") in {"Перевод", "Штрафы", "Казна"}:
+                    child.disabled = True
 
     @discord.ui.button(label="Перевод", emoji="💸", style=discord.ButtonStyle.primary, row=0)
     async def transfer(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -420,7 +440,6 @@ BUSINESS_STATUS_LABELS = {
     "REJECTED": "предыдущая заявка отклонена",
     "FROZEN": "бизнес заморожен",
     "CLOSED": "бизнес закрыт",
-    "REQUIRES_REOPEN": "бизнес требует повторного открытия",
     "SUSPENDED": "работа бизнеса приостановлена",
     "BLOCKED": "бизнес заблокирован",
 }
@@ -433,73 +452,41 @@ class BusinessApplicationPanelView(discord.ui.View):
 
     @discord.ui.button(label="Подать заявку", emoji="📝", style=discord.ButtonStyle.primary, custom_id="ff:v36:business-application")
     async def apply(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        # Сначала проверяем реальный статус бизнеса в Minecraft. Это не даёт
-        # создать повторную заявку при активном бизнесе и показывает отдельную
-        # кнопку восстановления после его закрытия.
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             profile = await _profile(self.client, interaction.user.id)
-            business = profile.get("business") or None
-            if not business:
+            if profile.get("businessBanned"):
                 await interaction.followup.send(
                     embed=embed(
                         self.client,
-                        "Открытие бизнеса",
-                        "У вас пока нет бизнеса. Нажмите кнопку ниже, чтобы заполнить заявку.",
-                    ),
-                    view=BusinessNewApplicationView(self.client, interaction.user.id),
-                    ephemeral=True,
-                )
-                return
-
-            status = str(business.get("status") or "").upper()
-            name = str(business.get("name") or "Без названия")
-
-            if status == "APPROVED":
-                await interaction.followup.send(
-                    embed=embed(
-                        self.client,
-                        "Бизнес уже открыт",
-                        f"У вас уже есть активный бизнес: **{name}**.\n"
-                        "Управляйте им через канал бизнеса.",
+                        "Доступ к бизнесам заблокирован",
+                        f"Причина: **{profile.get('businessBanReason') or 'не указана'}**",
+                        error=True,
                     ),
                     ephemeral=True,
                 )
                 return
-
-            if status in {"CLOSED", "REQUIRES_REOPEN"}:
+            businesses = list(profile.get("businesses", []) or [])
+            max_businesses = max(1, int(profile.get("maxBusinesses", 1) or 1))
+            if len(businesses) >= max_businesses:
+                names = "\n".join(f"• **{item.get('name', 'Без названия')}**" for item in businesses)
                 await interaction.followup.send(
                     embed=embed(
                         self.client,
-                        "Бизнес можно открыть заново",
-                        f"Ваш бизнес **{name}** сейчас закрыт.\n"
-                        "Нажмите кнопку ниже для повторного открытия.",
+                        "Достигнут лимит бизнесов",
+                        f"У вас уже **{len(businesses)} из {max_businesses}** бизнесов.\n{names}",
                     ),
-                    view=BusinessReopenView(self.client, interaction.user.id),
                     ephemeral=True,
                 )
                 return
-
-            if status == "REJECTED":
-                await interaction.followup.send(
-                    embed=embed(
-                        self.client,
-                        "Можно подать новую заявку",
-                        f"Предыдущая заявка на бизнес **{name}** была отклонена.\n"
-                        "Нажмите кнопку ниже, чтобы заполнить новую заявку.",
-                    ),
-                    view=BusinessNewApplicationView(self.client, interaction.user.id),
-                    ephemeral=True,
-                )
-                return
-
-            status_text = BUSINESS_STATUS_LABELS.get(status, status or "статус не определён")
             await interaction.followup.send(
                 embed=embed(
                     self.client,
-                    "Открытие бизнеса недоступно",
-                    f"Бизнес: **{name}**\nТекущий статус: **{status_text}**.",
+                    "Открытие бизнеса",
+                    f"Сейчас открыто: **{len(businesses)} из {max_businesses}**.\n"
+                    "Нажмите кнопку ниже, чтобы заполнить заявку на новый бизнес.",
                 ),
+                view=BusinessNewApplicationView(self.client, interaction.user.id),
                 ephemeral=True,
             )
         except Exception as exc:
@@ -569,13 +556,88 @@ def business_embed(client: Any, data: dict[str, Any]) -> discord.Embed:
     return result
 
 
-async def open_business_dashboard(interaction: discord.Interaction, client: Any) -> None:
+def _business_query(user_id: int, business_id: str) -> dict[str, str]:
+    return {"discord_id": str(user_id), "business_id": str(business_id)}
+
+
+def _business_payload(user_id: int, business_id: str, **values: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {"discord_id": str(user_id), "business_id": str(business_id)}
+    result.update(values)
+    return result
+
+
+class BusinessChoiceSelect(discord.ui.Select):
+    def __init__(self, owner: "BusinessChoiceView", businesses: list[dict[str, Any]]) -> None:
+        options = [
+            discord.SelectOption(
+                label=truncate(("🔒 " if item.get("frozen") else "") + (item.get("name") or "Без названия"), 100),
+                value=str(item.get("id")),
+                description=truncate(
+                    (f"Заморожен • {item.get('freezeReason') or 'причина не указана'}" if item.get("frozen") else f"Баланс: {money(item.get('balance'))} • {item.get('type', 'BUSINESS')}"),
+                    100,
+                ),
+            )
+            for item in businesses[:25]
+            if item.get("id")
+        ]
+        super().__init__(placeholder="Выберите бизнес", options=options, min_values=1, max_values=1)
+        self.owner = owner
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await open_business_dashboard(interaction, self.owner.client, business_id=self.values[0])
+
+
+class BusinessChoiceView(OwnedView):
+    def __init__(self, client: Any, owner_id: int, businesses: list[dict[str, Any]]) -> None:
+        super().__init__(client, owner_id)
+        self.add_item(BusinessChoiceSelect(self, businesses))
+
+
+async def open_business_dashboard(interaction: discord.Interaction, client: Any, *, business_id: str | None = None) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        data = await client.api.call("/api/v1/business", query={"discord_id": str(interaction.user.id)}, retries=0)
+        if not business_id:
+            profile = await _profile(client, interaction.user.id)
+            if profile.get("businessBanned"):
+                await interaction.followup.send(
+                    embed=embed(
+                        client,
+                        "Доступ к бизнесам заблокирован",
+                        f"Причина: **{profile.get('businessBanReason') or 'не указана'}**",
+                        error=True,
+                    ),
+                    ephemeral=True,
+                )
+                return
+            businesses = list(profile.get("businesses", []) or [])
+            if not businesses:
+                await interaction.followup.send(
+                    embed=embed(client, "Управление бизнесом", "У вас нет активных бизнесов."),
+                    ephemeral=True,
+                )
+                return
+            if len(businesses) > 1:
+                text = "\n".join(
+                    f"• {'🔒 ' if item.get('frozen') else ''}**{item.get('name', 'Без названия')}** — "
+                    + (f"заморожен: {item.get('freezeReason') or 'причина не указана'}" if item.get("frozen") else money(item.get("balance")))
+                    for item in businesses
+                )
+                await interaction.followup.send(
+                    embed=embed(client, "Выберите бизнес", text),
+                    view=BusinessChoiceView(client, interaction.user.id, businesses),
+                    ephemeral=True,
+                )
+                return
+            business_id = str(businesses[0].get("id") or "")
+
+        data = await client.api.call(
+            "/api/v1/business",
+            query=_business_query(interaction.user.id, business_id),
+            retries=0,
+        )
         result = business_embed(client, data)
-        view = BusinessDashboardView(client, interaction.user.id, data)
+        view = BusinessDashboardView(client, interaction.user.id, data, business_id)
         banner = make_banner_file(client.state, "business")
         if banner is not None:
             await interaction.followup.send(embed=result, view=view, file=banner, ephemeral=True)
@@ -583,34 +645,6 @@ async def open_business_dashboard(interaction: discord.Interaction, client: Any)
             await interaction.followup.send(embed=result, view=view, ephemeral=True)
     except Exception as exc:
         await client.send_error(interaction, exc)
-
-
-async def reopen_business_for_user(interaction: discord.Interaction, client: Any, user_id: int) -> None:
-    if not interaction.response.is_done():
-        await interaction.response.defer(ephemeral=True, thinking=True)
-    try:
-        data = await client.api.call(
-            "/api/v1/business/reopen",
-            method="POST",
-            payload={"discord_id": str(user_id)},
-            retries=0,
-        )
-        text = (
-            f"Бизнес: **{data.get('businessName', '—')}**\n"
-            f"Списано: **{money(data.get('reopenCost'))}**\n"
-            f"Личный баланс: **{money(data.get('balance'))}**\n\n"
-            f"{data.get('terminalDelivery', 'Терминал подготовлен к выдаче.')}"
-        )
-        await interaction.followup.send(embed=embed(client, "Бизнес восстановлен", text), ephemeral=True)
-        await safe_dm(interaction.user, title="Бизнес восстановлен", description=text, client=client)
-    except Exception as exc:
-        await client.send_error(interaction, exc)
-
-
-class BusinessReopenView(OwnedView):
-    @discord.ui.button(label="Открыть бизнес заново", emoji="🔄", style=discord.ButtonStyle.success)
-    async def reopen(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await reopen_business_for_user(interaction, self.client, self.owner_id)
 
 
 class AdvancedBusinessPanelView(discord.ui.View):
@@ -622,52 +656,49 @@ class AdvancedBusinessPanelView(discord.ui.View):
     async def business(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await open_business_dashboard(interaction, self.client)
 
-    @discord.ui.button(label="Восстановить бизнес", emoji="🔧", style=discord.ButtonStyle.secondary, custom_id="ff:v43:business-reopen")
-    async def reopen_business(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await reopen_business_for_user(interaction, self.client, interaction.user.id)
-
-
 class BusinessDashboardView(OwnedView):
-    def __init__(self, client: Any, owner_id: int, data: dict[str, Any]) -> None:
+    def __init__(self, client: Any, owner_id: int, data: dict[str, Any], business_id: str) -> None:
         super().__init__(client, owner_id)
         self.data = data
+        self.business_id = business_id
 
     @discord.ui.button(label="Положить деньги", emoji="➕", style=discord.ButtonStyle.success, row=0)
     async def deposit(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_modal(BusinessMoneyModal(self.client, self.owner_id, "deposit"))
+        await interaction.response.send_modal(BusinessMoneyModal(self.client, self.owner_id, self.business_id, "deposit"))
 
     @discord.ui.button(label="Снять деньги", emoji="➖", style=discord.ButtonStyle.danger, row=0)
     async def withdraw(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_modal(BusinessMoneyModal(self.client, self.owner_id, "withdraw"))
+        await interaction.response.send_modal(BusinessMoneyModal(self.client, self.owner_id, self.business_id, "withdraw"))
 
     @discord.ui.button(label="Товары", emoji="📦", style=discord.ButtonStyle.secondary, row=0)
     async def products(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await open_products(interaction, self.client)
+        await open_products(interaction, self.client, self.business_id)
 
     @discord.ui.button(label="Категории", emoji="🗂️", style=discord.ButtonStyle.secondary, row=1)
     async def categories(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await open_categories(interaction, self.client)
+        await open_categories(interaction, self.client, self.business_id)
 
     @discord.ui.button(label="Продвижение", emoji="🔥", style=discord.ButtonStyle.primary, row=1)
     async def promotion(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await open_promotion(interaction, self.client, self.data)
+        await open_promotion(interaction, self.client, self.business_id, self.data)
 
     @discord.ui.button(label="Оформление по продажам", emoji="🎨", style=discord.ButtonStyle.primary, row=1)
     async def theme(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await open_theme(interaction, self.client, self.data)
+        await open_theme(interaction, self.client, self.business_id, self.data)
 
     @discord.ui.button(label="Улучшения", emoji="⬆️", style=discord.ButtonStyle.success, row=2)
     async def upgrades(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await open_business_upgrades(interaction, self.client, self.data)
+        await open_business_upgrades(interaction, self.client, self.business_id, self.data)
 
 
 class BusinessMoneyModal(discord.ui.Modal):
     amount = discord.ui.TextInput(label="Сумма в АР", placeholder="1000", max_length=18)
 
-    def __init__(self, client: Any, owner_id: int, action: str) -> None:
+    def __init__(self, client: Any, owner_id: int, business_id: str, action: str) -> None:
         super().__init__(title="Пополнить бизнес" if action == "deposit" else "Снять с бизнеса", timeout=300)
         self.client = client
         self.owner_id = owner_id
+        self.business_id = business_id
         self.action = action
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -681,7 +712,7 @@ class BusinessMoneyModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True, thinking=True)
         path = "/api/v1/business/deposit" if self.action == "deposit" else "/api/v1/business/withdraw"
         try:
-            data = await self.client.api.call(path, method="POST", payload={"discord_id": str(self.owner_id), "amount": amount}, retries=0)
+            data = await self.client.api.call(path, method="POST", payload=_business_payload(self.owner_id, self.business_id, amount=amount), retries=0)
             title = "Бизнес пополнен" if self.action == "deposit" else "Деньги сняты с бизнеса"
             text = f"Сумма: **{money(data.get('amount'))}**\nБаланс бизнеса: **{money(data.get('businessBalance'))}**\nЛичный баланс: **{money(data.get('personalBalance'))}**\n\nЧтобы увидеть новые значения в кабинете, откройте управление бизнесом заново."
             await interaction.followup.send(embed=embed(self.client, title, text), ephemeral=True)
@@ -690,17 +721,17 @@ class BusinessMoneyModal(discord.ui.Modal):
             await self.client.send_error(interaction, exc)
 
 
-async def open_products(interaction: discord.Interaction, client: Any) -> None:
+async def open_products(interaction: discord.Interaction, client: Any, business_id: str) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        data = await client.api.call("/api/v1/business", query={"discord_id": str(interaction.user.id)}, retries=0)
+        data = await client.api.call("/api/v1/business", query=_business_query(interaction.user.id, business_id), retries=0)
         products = list(data.get("productList", []) or [])
         if not products:
             await interaction.followup.send(embed=embed(client, "Товары бизнеса", "Товаров пока нет. Добавление и пополнение выполняются только в Minecraft через терминал."), ephemeral=True)
             return
         result = embed(client, "Товары бизнеса", "Название определяется предметом в Minecraft автоматически. Здесь можно изменить только цену, размер набора и видимость. Пополнение склада выполняется в Minecraft.")
-        await interaction.followup.send(embed=result, view=ProductsView(client, interaction.user.id, products), ephemeral=True)
+        await interaction.followup.send(embed=result, view=ProductsView(client, interaction.user.id, business_id, products), ephemeral=True)
     except Exception as exc:
         await client.send_error(interaction, exc)
 
@@ -716,12 +747,13 @@ class ProductSelect(discord.ui.Select):
         if product is None:
             await interaction.response.send_message("Товар не найден.", ephemeral=True)
             return
-        await interaction.response.send_modal(ProductEditModal(self.owner.client, self.owner.owner_id, product))
+        await interaction.response.send_modal(ProductEditModal(self.owner.client, self.owner.owner_id, self.owner.business_id, product))
 
 
 class ProductsView(OwnedView):
-    def __init__(self, client: Any, owner_id: int, products: list[dict[str, Any]]) -> None:
+    def __init__(self, client: Any, owner_id: int, business_id: str, products: list[dict[str, Any]]) -> None:
         super().__init__(client, owner_id)
+        self.business_id = business_id
         self.products = products
         self.add_item(ProductSelect(self, products))
 
@@ -731,10 +763,11 @@ class ProductEditModal(discord.ui.Modal, title="Изменить товар"):
     bundle = discord.ui.TextInput(label="Количество в наборе", max_length=6)
     enabled = discord.ui.TextInput(label="Показывать: да / нет", max_length=5)
 
-    def __init__(self, client: Any, owner_id: int, product: dict[str, Any]) -> None:
+    def __init__(self, client: Any, owner_id: int, business_id: str, product: dict[str, Any]) -> None:
         super().__init__(timeout=300)
         self.client = client
         self.owner_id = owner_id
+        self.business_id = business_id
         self.product = product
         self.price.default = str(product.get("price", 0))
         self.bundle.default = str(product.get("amount", 1))
@@ -758,6 +791,7 @@ class ProductEditModal(discord.ui.Modal, title="Изменить товар"):
         try:
             await self.client.api.call("/api/v1/business/products/edit", method="POST", payload={
                 "discord_id": str(self.owner_id),
+                "business_id": self.business_id,
                 "product_id": str(self.product.get("id")),
                 # Название не редактируется пользователем, но передаётся мосту
                 # без изменений для совместимости с текущим API.
@@ -771,44 +805,45 @@ class ProductEditModal(discord.ui.Modal, title="Изменить товар"):
             await self.client.send_error(interaction, exc)
 
 
-async def open_categories(interaction: discord.Interaction, client: Any) -> None:
+async def open_categories(interaction: discord.Interaction, client: Any, business_id: str) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        data = await client.api.call("/api/v1/business", query={"discord_id": str(interaction.user.id)}, retries=0)
+        data = await client.api.call("/api/v1/business", query=_business_query(interaction.user.id, business_id), retries=0)
         categories = list(data.get("categoryList", []) or [])
         text = "\n".join(f"• **{item.get('name')}** — `{item.get('id')}`" for item in categories) or "Категорий пока нет."
-        await interaction.followup.send(embed=embed(client, "Категории", text), view=CategoriesView(client, interaction.user.id, categories), ephemeral=True)
+        await interaction.followup.send(embed=embed(client, "Категории", text), view=CategoriesView(client, interaction.user.id, business_id, categories), ephemeral=True)
     except Exception as exc:
         await client.send_error(interaction, exc)
 
 
 class CategoriesView(OwnedView):
-    def __init__(self, client: Any, owner_id: int, categories: list[dict[str, Any]]) -> None:
+    def __init__(self, client: Any, owner_id: int, business_id: str, categories: list[dict[str, Any]]) -> None:
         super().__init__(client, owner_id)
+        self.business_id = business_id
         self.categories = categories
 
     @discord.ui.button(label="Создать", emoji="➕", style=discord.ButtonStyle.success)
     async def create(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_modal(CategoryCreateModal(self.client, self.owner_id))
+        await interaction.response.send_modal(CategoryCreateModal(self.client, self.owner_id, self.business_id))
 
     @discord.ui.button(label="Переименовать", emoji="✏️", style=discord.ButtonStyle.secondary)
     async def rename(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_modal(CategoryRenameModal(self.client, self.owner_id))
+        await interaction.response.send_modal(CategoryRenameModal(self.client, self.owner_id, self.business_id))
 
     @discord.ui.button(label="Удалить", emoji="🗑️", style=discord.ButtonStyle.danger)
     async def delete(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_modal(CategoryDeleteModal(self.client, self.owner_id))
+        await interaction.response.send_modal(CategoryDeleteModal(self.client, self.owner_id, self.business_id))
 
 
 class CategoryCreateModal(discord.ui.Modal, title="Создать категорию"):
     name = discord.ui.TextInput(label="Название", min_length=2, max_length=50)
-    def __init__(self, client: Any, owner_id: int) -> None:
-        super().__init__(timeout=300); self.client = client; self.owner_id = owner_id
+    def __init__(self, client: Any, owner_id: int, business_id: str) -> None:
+        super().__init__(timeout=300); self.client = client; self.owner_id = owner_id; self.business_id = business_id
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            await self.client.api.call("/api/v1/business/categories/create", method="POST", payload={"discord_id": str(self.owner_id), "name": self.name.value.strip()}, retries=0)
+            await self.client.api.call("/api/v1/business/categories/create", method="POST", payload=_business_payload(self.owner_id, self.business_id, name=self.name.value.strip()), retries=0)
             await interaction.followup.send("Категория создана.", ephemeral=True)
         except Exception as exc: await self.client.send_error(interaction, exc)
 
@@ -816,24 +851,24 @@ class CategoryCreateModal(discord.ui.Modal, title="Создать категор
 class CategoryRenameModal(discord.ui.Modal, title="Переименовать категорию"):
     category_id = discord.ui.TextInput(label="ID категории", max_length=80)
     name = discord.ui.TextInput(label="Новое название", min_length=2, max_length=50)
-    def __init__(self, client: Any, owner_id: int) -> None:
-        super().__init__(timeout=300); self.client = client; self.owner_id = owner_id
+    def __init__(self, client: Any, owner_id: int, business_id: str) -> None:
+        super().__init__(timeout=300); self.client = client; self.owner_id = owner_id; self.business_id = business_id
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            await self.client.api.call("/api/v1/business/categories/rename", method="POST", payload={"discord_id": str(self.owner_id), "category_id": self.category_id.value.strip(), "name": self.name.value.strip()}, retries=0)
+            await self.client.api.call("/api/v1/business/categories/rename", method="POST", payload=_business_payload(self.owner_id, self.business_id, category_id=self.category_id.value.strip(), name=self.name.value.strip()), retries=0)
             await interaction.followup.send("Категория переименована.", ephemeral=True)
         except Exception as exc: await self.client.send_error(interaction, exc)
 
 
 class CategoryDeleteModal(discord.ui.Modal, title="Удалить категорию"):
     category_id = discord.ui.TextInput(label="ID категории", max_length=80)
-    def __init__(self, client: Any, owner_id: int) -> None:
-        super().__init__(timeout=300); self.client = client; self.owner_id = owner_id
+    def __init__(self, client: Any, owner_id: int, business_id: str) -> None:
+        super().__init__(timeout=300); self.client = client; self.owner_id = owner_id; self.business_id = business_id
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            await self.client.api.call("/api/v1/business/categories/delete", method="POST", payload={"discord_id": str(self.owner_id), "category_id": self.category_id.value.strip()}, retries=0)
+            await self.client.api.call("/api/v1/business/categories/delete", method="POST", payload=_business_payload(self.owner_id, self.business_id, category_id=self.category_id.value.strip()), retries=0)
             await interaction.followup.send("Категория удалена.", ephemeral=True)
         except Exception as exc: await self.client.send_error(interaction, exc)
 
@@ -846,12 +881,12 @@ def _tax_percent(value: Any) -> str:
         return "—"
 
 
-async def open_business_upgrades(interaction: discord.Interaction, client: Any, data: dict[str, Any] | None = None) -> None:
+async def open_business_upgrades(interaction: discord.Interaction, client: Any, business_id: str, data: dict[str, Any] | None = None) -> None:
     try:
         if data is None:
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True, thinking=True)
-            data = await client.api.call("/api/v1/business", query={"discord_id": str(interaction.user.id)}, retries=0)
+            data = await client.api.call("/api/v1/business", query=_business_query(interaction.user.id, business_id), retries=0)
         upgrades = dict(data.get("upgrades") or {})
         category_level = int(upgrades.get("categoryLevel", 0) or 0)
         max_category_level = int(upgrades.get("maxCategoryLevel", 0) or 0)
@@ -878,7 +913,7 @@ async def open_business_upgrades(interaction: discord.Interaction, client: Any, 
         message.add_field(name="Лимит категорий", value=category_text, inline=False)
         message.add_field(name="Снижение налога", value=tax_text, inline=False)
         message.set_footer(text="После покупки снова откройте управление бизнесом, чтобы увидеть свежие данные.")
-        view = BusinessUpgradeView(client, interaction.user.id, upgrades)
+        view = BusinessUpgradeView(client, interaction.user.id, business_id, upgrades)
         if interaction.response.is_done():
             await interaction.followup.send(embed=message, view=view, ephemeral=True)
         else:
@@ -888,8 +923,9 @@ async def open_business_upgrades(interaction: discord.Interaction, client: Any, 
 
 
 class BusinessUpgradeView(OwnedView):
-    def __init__(self, client: Any, owner_id: int, upgrades: dict[str, Any]) -> None:
+    def __init__(self, client: Any, owner_id: int, business_id: str, upgrades: dict[str, Any]) -> None:
         super().__init__(client, owner_id)
+        self.business_id = business_id
         self.upgrades = upgrades
         self.category_upgrade.disabled = int(upgrades.get("categoryLevel", 0) or 0) >= int(upgrades.get("maxCategoryLevel", 0) or 0)
         self.tax_upgrade.disabled = int(upgrades.get("taxLevel", 0) or 0) >= int(upgrades.get("maxTaxLevel", 0) or 0)
@@ -905,7 +941,7 @@ class BusinessUpgradeView(OwnedView):
     async def _buy(self, interaction: discord.Interaction, path: str, title: str) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            data = await self.client.api.call(path, method="POST", payload={"discord_id": str(self.owner_id)}, retries=0)
+            data = await self.client.api.call(path, method="POST", payload=_business_payload(self.owner_id, self.business_id), retries=0)
             if data.get("type") == "CATEGORIES":
                 details = (
                     f"Списано: **{money(data.get('cost'))}**\n"
@@ -924,12 +960,12 @@ class BusinessUpgradeView(OwnedView):
             await self.client.send_error(interaction, exc)
 
 
-async def open_promotion(interaction: discord.Interaction, client: Any, data: dict[str, Any] | None = None) -> None:
+async def open_promotion(interaction: discord.Interaction, client: Any, business_id: str, data: dict[str, Any] | None = None) -> None:
     try:
         if data is None:
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True, thinking=True)
-            data = await client.api.call("/api/v1/business", query={"discord_id": str(interaction.user.id)}, retries=0)
+            data = await client.api.call("/api/v1/business", query=_business_query(interaction.user.id, business_id), retries=0)
         catalog = data.get("catalog") or {}
         if catalog.get("promoted"):
             message = embed(client, "Продвижение активно", f"Действует до {discord_time(catalog.get('promotedUntil'), 'F')}.\nЗаранее купить или продлить продвижение нельзя.")
@@ -940,7 +976,7 @@ async def open_promotion(interaction: discord.Interaction, client: Any, data: di
             return
         text = f"Стоимость: **{money(data.get('promotionCost'))}**\nСрок: **{data.get('promotionDurationHours')} ч.**\nКоличество продвигаемых бизнесов не ограничено. Ваш магазин попадёт в начало игрового списка, но цены не будут сортироваться от дешёвых к дорогим."
         message = embed(client, "Продвижение игрового каталога", text)
-        view = PromotionConfirmView(client, interaction.user.id)
+        view = PromotionConfirmView(client, interaction.user.id, business_id)
         if interaction.response.is_done():
             await interaction.followup.send(embed=message, view=view, ephemeral=True)
         else:
@@ -950,18 +986,22 @@ async def open_promotion(interaction: discord.Interaction, client: Any, data: di
 
 
 class PromotionConfirmView(OwnedView):
+    def __init__(self, client: Any, owner_id: int, business_id: str) -> None:
+        super().__init__(client, owner_id)
+        self.business_id = business_id
+
     @discord.ui.button(label="Купить продвижение", emoji="🔥", style=discord.ButtonStyle.success)
     async def buy(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            data = await self.client.api.call("/api/v1/business/catalog/promotion/buy", method="POST", payload={"discord_id": str(self.owner_id)}, retries=0)
+            data = await self.client.api.call("/api/v1/business/catalog/promotion/buy", method="POST", payload=_business_payload(self.owner_id, self.business_id), retries=0)
             text = f"Списано: **{money(data.get('cost'))}**\nПродвижение до: {discord_time(data.get('promotedUntil'), 'F')}\nБаланс бизнеса: **{money(data.get('businessBalance'))}**"
             await interaction.followup.send(embed=embed(self.client, "Продвижение куплено", text), ephemeral=True)
         except Exception as exc:
             await self.client.send_error(interaction, exc)
 
 
-async def open_theme(interaction: discord.Interaction, client: Any, data: dict[str, Any] | None = None) -> None:
+async def open_theme(interaction: discord.Interaction, client: Any, business_id: str, data: dict[str, Any] | None = None) -> None:
     message = embed(
         client,
         "Оформление бизнеса",
