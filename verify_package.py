@@ -38,7 +38,7 @@ texts = {
 
 required_markers = {
     "bot.py": [
-        'BOT_PACKAGE_VERSION = "4.3.1-BUSINESS-REOPEN-FIX"',
+        'BOT_PACKAGE_VERSION = "4.4.0-BANK-UX-SECURITY"',
         '@bot.tree.command(name="настроить_банк"',
         "self.add_view(ConfigPanelView(self))",
         "discord.ui.LayoutView",
@@ -47,13 +47,12 @@ required_markers = {
         "BankBannerUploadModal",
     ],
     "advanced_ui.py": [
-        "business/catalog/promotion/buy",
         "business/upgrades/categories/buy",
         "business/upgrades/tax/buy",
         "FineAdminModal",
     ],
-    "discord_bus.py": ["catalog_promotion_buy", "fine_admin_cancel", 'resolver("bridge")'],
-    "runtime_settings.py": ["government_fines", "fine_issuers", '"admins"'],
+    "discord_bus.py": ["fine_admin_cancel", 'resolver("bridge")'],
+    "runtime_settings.py": ["government_fines", '"admins"'],
     "banner_files.py": ["save_banner_attachment", "attachment://", "BANNER_DIRECTORY"],
 }
 for filename, markers in required_markers.items():
@@ -77,4 +76,4 @@ if errors:
         print("-", error)
     raise SystemExit(1)
 
-print("OK: пакет 4.3.1 прошёл проверку, сохраняет Discord config-панель и поддерживает повторное открытие бизнеса.")
+print("OK: пакет 4.4.0 прошёл проверку, скрывает ID штрафов и не содержит повторного открытия или продвижения бизнеса.")

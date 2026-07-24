@@ -14,8 +14,7 @@
     "bridge": 0
   },
   "roles": {
-    "bank_access": [],
-    "fine_issuers": []
+    "bank_access": []
   },
   "users": {
     "admins": []

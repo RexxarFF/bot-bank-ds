@@ -24,7 +24,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "roles": {
         "bank_access": [],
-        "fine_issuers": [],
     },
     "users": {"admins": []},
     "branding": {
@@ -47,11 +46,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         },
         "business": {
             "title": "Управление бизнесом",
-            "description": "Финансы, товары, категории, продвижение и оформление, открываемое за продажи.",
+            "description": "Финансы, товары, категории и оформление, открываемое за продажи.",
         },
         "government_fines": {
             "title": "Government • Штрафы",
-            "description": "Выдача штрафов уполномоченными ролями и администраторами банка.",
+            "description": "Выдача и управление штрафами администрацией банка.",
         },
     },
     "features": {
