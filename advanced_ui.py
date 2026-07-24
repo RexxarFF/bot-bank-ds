@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
+
 from datetime import datetime, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import discord
 
@@ -45,39 +46,6 @@ def discord_time(milliseconds: Any, style: str = "R") -> str:
         return f"<t:{int(milliseconds) // 1000}:{style}>"
     except (TypeError, ValueError):
         return "—"
-
-
-def russian_deadline(milliseconds: Any, timezone_name: str = "Europe/Moscow") -> str:
-    try:
-        zone = ZoneInfo(timezone_name)
-        value = datetime.fromtimestamp(int(milliseconds) / 1000, tz=zone)
-    except Exception:
-        return "—"
-    weekdays = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
-    months = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря")
-    return f"до {value:%H:%M}, {weekdays[value.weekday()]}, {value.day} {months[value.month - 1]} {value.year} г."
-
-
-def fine_label(fine: dict[str, Any], fallback_number: int = 0) -> str:
-    number = fine.get("displayNumber") or fine.get("number") or fallback_number
-    return f"Штраф №{number or '—'}"
-
-
-def parse_duration(value: str) -> int:
-    text = value.strip().lower().replace(" ", "")
-    units = {
-        "s": 1_000, "с": 1_000,
-        "m": 60_000, "м": 60_000,
-        "h": 3_600_000, "ч": 3_600_000,
-        "d": 86_400_000, "д": 86_400_000,
-        "w": 604_800_000, "н": 604_800_000,
-    }
-    for suffix, multiplier in units.items():
-        if text.endswith(suffix) and text[:-len(suffix)].isdigit():
-            amount = int(text[:-len(suffix)])
-            if amount > 0:
-                return amount * multiplier
-    raise ValueError("invalid duration")
 
 
 def brand_name(client: Any) -> str:
@@ -354,6 +322,25 @@ class TransferAmountModal(discord.ui.Modal, title="Сумма перевода")
             await self.client.send_error(interaction, exc)
 
 
+_DURATION_UNITS_MS = {
+    "s": 1_000, "с": 1_000,
+    "m": 60_000, "м": 60_000,
+    "h": 3_600_000, "ч": 3_600_000,
+    "d": 86_400_000, "д": 86_400_000,
+    "w": 604_800_000, "н": 604_800_000,
+}
+
+
+def parse_duration_ms(raw: str) -> int:
+    match = re.fullmatch(r"\s*(\d+)\s*([sсmмhчdдwн])\s*", str(raw).lower())
+    if not match:
+        raise ValueError("invalid duration")
+    value = int(match.group(1))
+    if value <= 0:
+        raise ValueError("invalid duration")
+    return value * _DURATION_UNITS_MS[match.group(2)]
+
+
 async def open_fines(interaction: discord.Interaction, client: Any) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -363,13 +350,13 @@ async def open_fines(interaction: discord.Interaction, client: Any) -> None:
         if not fines:
             await interaction.followup.send(embed=embed(client, "Штрафы", "Неоплаченных штрафов нет."), ephemeral=True)
             return
-        for number, fine in enumerate(fines, start=1):
-            fine["displayNumber"] = number
         result = embed(client, "Неоплаченные штрафы", f"Всего: **{len(fines)}**")
-        for number, fine in enumerate(fines[:10], start=1):
+        for fine in fines[:10]:
+            number = fine.get("number", "?")
             result.add_field(
-                name=f"{fine_label(fine, number)} • {money(fine.get('amount'))}",
-                value=f"{truncate(fine.get('reason'), 300)}\nВыдал: **{fine.get('issuedBy') or 'Система'}**\nСрок оплаты: **{russian_deadline(fine.get('dueAt'), getattr(client, 'server_timezone', 'Europe/Moscow'))}**",
+                name=f"Штраф №{number} • {money(fine.get('amount'))}",
+                value=(f"{truncate(fine.get('reason'), 300)}\nВыдал: **{fine.get('issuedBy') or 'Система'}**"
+                       f"\nСрок оплаты: **{fine.get('dueText') or discord_time(fine.get('dueAt'))}**"),
                 inline=False,
             )
         await interaction.followup.send(embed=result, view=FinesView(client, interaction.user.id, fines), ephemeral=True)
@@ -379,20 +366,36 @@ async def open_fines(interaction: discord.Interaction, client: Any) -> None:
 
 class FineSelect(discord.ui.Select):
     def __init__(self, owner: "FinesView", fines: list[dict[str, Any]]) -> None:
-        options = [discord.SelectOption(label=f"{fine_label(item, index)} • {money(item.get('amount'))}", value=str(item.get("id")), description=truncate(item.get("reason"), 90)) for index, item in enumerate(fines[:25], start=1)]
+        options = [
+            discord.SelectOption(
+                label=f"Штраф №{item.get('number', '?')} • {money(item.get('amount'))}",
+                value=str(item.get("paymentToken")),
+                description=truncate(item.get("reason"), 90),
+            )
+            for item in fines[:25]
+            if item.get("paymentToken")
+        ]
         super().__init__(placeholder="Выберите штраф для оплаты", options=options)
         self.owner = owner
+        self.fines_by_token = {str(item.get("paymentToken")): item for item in fines if item.get("paymentToken")}
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        fine_id = self.values[0]
-        await interaction.response.send_message("Подтвердите оплату штрафа.", view=PayFineConfirmView(self.owner.client, self.owner.owner_id, fine_id), ephemeral=True)
+        payment_token = self.values[0]
+        fine = self.fines_by_token.get(payment_token, {})
+        number = fine.get("number", "?")
+        await interaction.response.send_message(
+            f"Подтвердите оплату штрафа №{number} с банковского счёта.",
+            view=PayFineConfirmView(self.owner.client, self.owner.owner_id, payment_token, number),
+            ephemeral=True,
+        )
 
 
 class FinesView(OwnedView):
     def __init__(self, client: Any, owner_id: int, fines: list[dict[str, Any]]) -> None:
         super().__init__(client, owner_id)
         self.fines = fines
-        self.add_item(FineSelect(self, fines))
+        if any(item.get("paymentToken") for item in fines):
+            self.add_item(FineSelect(self, fines))
 
     @discord.ui.button(label="Оплатить все", emoji="✅", style=discord.ButtonStyle.success, row=1)
     async def pay_all(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -405,16 +408,17 @@ class FinesView(OwnedView):
 
 
 class PayFineConfirmView(OwnedView):
-    def __init__(self, client: Any, owner_id: int, fine_id: str) -> None:
+    def __init__(self, client: Any, owner_id: int, payment_token: str, fine_number: int | str) -> None:
         super().__init__(client, owner_id)
-        self.fine_id = fine_id
+        self.payment_token = payment_token
+        self.fine_number = fine_number
 
     @discord.ui.button(label="Оплатить", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            data = await self.client.api.call("/api/v1/fines/pay", method="POST", payload={"discord_id": str(self.owner_id), "fine_id": self.fine_id}, retries=0)
-            await interaction.followup.send(embed=embed(self.client, "Штраф оплачен", f"Списано: **{money(data.get('amount'))}**\nОстаток: **{money(data.get('balance'))}**"), ephemeral=True)
+            data = await self.client.api.call("/api/v1/fines/pay", method="POST", payload={"discord_id": str(self.owner_id), "fine_id": self.payment_token}, retries=0)
+            await interaction.followup.send(embed=embed(self.client, f"Штраф №{data.get('fineNumber', self.fine_number)} оплачен", f"Списано: **{money(data.get('amount'))}**\nОстаток: **{money(data.get('balance'))}**"), ephemeral=True)
         except Exception as exc:
             await self.client.send_error(interaction, exc)
 
@@ -574,15 +578,20 @@ def business_embed(client: Any, data: dict[str, Any]) -> discord.Embed:
     result.add_field(name="Выручка", value=f"Сегодня: **{money(data.get('todayRevenue'))}**\nВсего: **{money(data.get('totalRevenue'))}**", inline=True)
     result.add_field(name="Склад", value=f"Заканчиваются: **{data.get('lowStock', 0)}**\nПустые: **{data.get('emptyStock', 0)}**", inline=True)
     terminal = data.get("terminal") or {}
-    if terminal.get("placed"):
-        result.add_field(name="Терминал бизнеса", value=f"`{terminal.get('world')}` • **{terminal.get('x')}, {terminal.get('y')}, {terminal.get('z')}**", inline=False)
+    terminal_count = int(data.get("terminalCount", terminal.get("count", 0)) or 0)
+    terminal_limit = int(data.get("terminalLimit", 0) or 0)
+    locations = list(terminal.get("locations", []) or [])
+    if locations:
+        location_lines = [f"• `{item.get('world', '—')}` • **{item.get('x')}, {item.get('y')}, {item.get('z')}**" for item in locations[:5]]
+        if len(locations) > 5:
+            location_lines.append(f"• …и ещё {len(locations) - 5}")
+        terminal_text = f"Сеть владельца: **{terminal_count}/{terminal_limit}**\n" + "\n".join(location_lines)
     else:
-        result.add_field(name="Терминал бизнеса", value="Не установлен. Бизнес не показывается в игровом каталоге.", inline=False)
+        terminal_text = f"В этом бизнесе терминалы не установлены. Сеть владельца: **{terminal_count}/{terminal_limit}**."
+    result.add_field(name="Сеть терминалов", value=terminal_text, inline=False)
     result.add_field(
         name="Игровой каталог",
-        value=(
-            "Оформление открывается бесплатно за продажи и настраивается в Minecraft: `/biz design`."
-        ),
+        value="Оформление открывается бесплатно за продажи и настраивается в Minecraft: `/biz design`.",
         inline=False,
     )
     result.set_footer(text="Чтобы обновить баланс, продажи и склад, снова нажмите «Открыть управление бизнесом».")
@@ -715,7 +724,7 @@ class BusinessDashboardView(OwnedView):
     async def theme(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await open_theme(interaction, self.client, self.business_id, self.data)
 
-    @discord.ui.button(label="Улучшения", emoji="⬆️", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="Улучшения", emoji="⬆️", style=discord.ButtonStyle.success, row=1)
     async def upgrades(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await open_business_upgrades(interaction, self.client, self.business_id, self.data)
 
@@ -1015,7 +1024,7 @@ class GovernmentFinePanelView(discord.ui.View):
     @discord.ui.button(label="Выдать штраф", emoji="📄", style=discord.ButtonStyle.danger, custom_id="ff:v36:government-fine")
     async def issue(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not self.client.can_issue_fine(interaction):
-            await interaction.response.send_message("Выдавать штрафы могут только администраторы банка.", ephemeral=True)
+            await interaction.response.send_message("У вашей роли нет права выдавать штрафы.", ephemeral=True)
             return
         await interaction.response.send_message("Выберите игрока, которому нужно выдать штраф.", view=FineTargetView(self.client, interaction.user.id), ephemeral=True)
 
@@ -1047,7 +1056,7 @@ class FineTargetView(OwnedView):
 
 class FineIssueModal(discord.ui.Modal, title="Выдать штраф"):
     amount = discord.ui.TextInput(label="Сумма", placeholder="1000", max_length=18)
-    duration = discord.ui.TextInput(label="Срок", placeholder="30с, 15м, 2ч, 7д или 1н", max_length=12)
+    duration = discord.ui.TextInput(label="Срок", placeholder="30s / 15m / 2h / 7d / 1w", max_length=16)
     reason = discord.ui.TextInput(label="Причина", style=discord.TextStyle.paragraph, min_length=3, max_length=200)
 
     def __init__(self, client: Any, target: discord.User | discord.Member) -> None:
@@ -1057,15 +1066,22 @@ class FineIssueModal(discord.ui.Modal, title="Выдать штраф"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not self.client.can_issue_fine(interaction):
-            await interaction.response.send_message("Выдавать штрафы могут только администраторы банка.", ephemeral=True)
+            await interaction.response.send_message("Право выдачи штрафов было отозвано.", ephemeral=True)
             return
         try:
             amount = int(self.amount.value.replace(" ", ""))
-            duration_ms = parse_duration(self.duration.value)
             if amount <= 0:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message("Укажите положительную сумму и срок: 30с, 15м, 2ч, 7д или 1н.", ephemeral=True)
+            await interaction.response.send_message("Укажите положительную целую сумму штрафа.", ephemeral=True)
+            return
+        try:
+            duration_ms = parse_duration_ms(self.duration.value)
+        except ValueError:
+            await interaction.response.send_message(
+                "Некорректный срок. Используйте, например: `30s`, `15m`, `2h`, `7d` или `1w`. Русские единицы `с`, `м`, `ч`, `д`, `н` тоже поддерживаются.",
+                ephemeral=True,
+            )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -1077,11 +1093,11 @@ class FineIssueModal(discord.ui.Modal, title="Выдать штраф"):
                 "reason": self.reason.value.strip(),
                 "issuer_name": interaction.user.display_name,
             }, retries=0)
-            base_text = f"Игрок: **{data.get('target')}**\nСумма: **{money(data.get('amount'))}**\nПричина: **{data.get('reason')}**\nСрок оплаты: **{russian_deadline(data.get('dueAt'), getattr(self.client, 'server_timezone', 'Europe/Moscow'))}**"
-            admin_text = base_text + f"\nТехнический ID: `{data.get('fineId')}`"
-            player_text = f"Сумма: **{money(data.get('amount'))}**\nПричина: **{data.get('reason')}**\nСрок оплаты: **{russian_deadline(data.get('dueAt'), getattr(self.client, 'server_timezone', 'Europe/Moscow'))}**"
-            await interaction.followup.send(embed=embed(self.client, "Штраф выдан", admin_text), ephemeral=True)
-            await safe_dm(self.target, title="Вам выдан штраф", description=player_text, client=self.client)
+            number = data.get("fineNumber", "?")
+            text = (f"Игрок: **{data.get('target')}**\nСумма: **{money(data.get('amount'))}**"
+                    f"\nПричина: **{data.get('reason')}**\nСрок оплаты: **{data.get('dueText')}**")
+            await interaction.followup.send(embed=embed(self.client, f"Штраф №{number} выдан", text), ephemeral=True)
+            await safe_dm(self.target, title=f"Вам выдан штраф №{number}", description=text, client=self.client)
         except Exception as exc:
             await self.client.send_error(interaction, exc)
 
@@ -1112,6 +1128,6 @@ class FineAdminModal(discord.ui.Modal, title="Управление штрафо�
                 "reason": self.reason.value.strip(),
             }, retries=0)
             title = "Штраф отменён" if "cancel" in path else "Штраф погашен"
-            await interaction.followup.send(embed=embed(self.client, title, f"ID: `{data.get('fineId')}`\nИгрок: **{data.get('target')}**\nСумма: **{money(data.get('amount'))}**"), ephemeral=True)
+            await interaction.followup.send(embed=embed(self.client, title, f"Штраф №{data.get('fineNumber', '?')}\nТехнический ID: `{data.get('fineId')}`\nИгрок: **{data.get('target')}**\nСумма: **{money(data.get('amount'))}**"), ephemeral=True)
         except Exception as exc:
             await self.client.send_error(interaction, exc)

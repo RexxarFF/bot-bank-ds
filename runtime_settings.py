@@ -8,7 +8,7 @@ from storage import AtomicJsonStore
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "version": 6,
+    "version": 7,
     "guild_id": 0,
     "config_channel_id": 0,
     "config_message_id": 0,
@@ -46,11 +46,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         },
         "business": {
             "title": "Управление бизнесом",
-            "description": "Финансы, товары, категории и оформление, открываемое за продажи.",
+            "description": "Финансы, товары, категории, сеть терминалов и оформление магазина.",
         },
         "government_fines": {
             "title": "Government • Штрафы",
-            "description": "Выдача и управление штрафами администрацией банка.",
+            "description": "Выдача штрафов доступна только администраторам банка.",
         },
     },
     "features": {
@@ -83,7 +83,13 @@ def _deep_merge(default: Any, value: Any) -> Any:
 class RuntimeSettings:
     def __init__(self, path: str | Path = Path("data") / "settings.json") -> None:
         self.store = AtomicJsonStore(path, DEFAULT_SETTINGS, backups=20)
-        self.data = _deep_merge(DEFAULT_SETTINGS, self.store.load())
+        loaded = self.store.load()
+        self.data = _deep_merge(DEFAULT_SETTINGS, loaded)
+        # Безопасная очистка устаревшей Discord-роли выдачи штрафов.
+        roles = self.data.setdefault("roles", {})
+        if "fine_issuers" in roles:
+            roles.pop("fine_issuers", None)
+            self.store.save(self.data)
 
     def save(self) -> None:
         self.store.save(self.data)

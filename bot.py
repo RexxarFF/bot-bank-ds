@@ -31,7 +31,7 @@ from discord_bus import ApiError, FunFernusApi
 from env import Env, EnvError
 from runtime_settings import RuntimeSettings
 
-BOT_PACKAGE_VERSION = "4.4.0-BANK-UX-SECURITY"
+BOT_PACKAGE_VERSION = "4.4.0-BUSINESS-NETWORK"
 ENV = Env.load()
 try:
     ENV.validate()
@@ -158,7 +158,6 @@ class FunFernusBot(commands.Bot):
         self.poll_lock = asyncio.Lock()
         self.business_application_lock = asyncio.Lock()
         self.banner_upload_users: set[int] = set()
-        self.server_timezone = ENV.server_timezone
 
     async def setup_hook(self) -> None:
         await self.api.start()
@@ -233,6 +232,8 @@ class FunFernusBot(commands.Bot):
         return self.is_admin(interaction)
 
     def can_issue_fine(self, interaction: discord.Interaction) -> bool:
+        # Штрафы выдаются только пользователями с внутренним уровнем ADMIN.
+        # Discord-роли JUDGE/POLICE и их аналоги больше не участвуют в проверке.
         return self.is_admin(interaction)
 
     async def send_error(self, interaction: discord.Interaction, error: Exception) -> None:
@@ -551,8 +552,8 @@ def _panel_defaults(key: str) -> tuple[str, str]:
         "access": ("Получить доступ к банку", "Получите код в Minecraft командой `/discordshop link` и введите его через кнопку ниже."),
         "business_application": ("Открытие бизнеса", "Подайте заявку на создание бизнеса через форму."),
         "bank": ("FunFernus Bank", "Личный кабинет, переводы, штрафы, казна и история операций."),
-        "business": ("Управление бизнесом", "Финансы, товары, игровой каталог и цветовая тема."),
-        "government_fines": ("Government • Штрафы", "Выдача и управление штрафами администрацией банка."),
+        "business": ("Управление бизнесом", "Финансы, товары, игровой каталог, сеть терминалов и цветовая тема."),
+        "government_fines": ("Government • Штрафы", "Выдача штрафов уполномоченными ролями и администраторами банка."),
     }
     return defaults[key]
 
@@ -586,7 +587,7 @@ class PublicPanelButton(discord.ui.Button):
             return
         if self.action == "fine_issue":
             if not self.client.can_issue_fine(interaction):
-                await interaction.response.send_message("Выдавать штрафы могут только администраторы банка.", ephemeral=True)
+                await interaction.response.send_message("У вашей роли нет права выдавать штрафы.", ephemeral=True)
                 return
             await interaction.response.send_message(
                 "Выберите игрока, которому нужно выдать штраф.",

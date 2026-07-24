@@ -34,7 +34,6 @@ class Env:
     technical_bot_id: int
     bridge_timeout_seconds: float
     config_channel_id: int
-    server_timezone: str
 
     @classmethod
     def load(cls, path: str | Path = ".env") -> "Env":
@@ -63,7 +62,6 @@ class Env:
             technical_bot_id=technical_bot_id,
             bridge_timeout_seconds=timeout,
             config_channel_id=config_channel_id,
-            server_timezone=os.getenv("SERVER_TIMEZONE", "Europe/Moscow").strip() or "Europe/Moscow",
         )
 
     def validate(self) -> None:

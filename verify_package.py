@@ -38,7 +38,7 @@ texts = {
 
 required_markers = {
     "bot.py": [
-        'BOT_PACKAGE_VERSION = "4.4.0-BANK-UX-SECURITY"',
+        'BOT_PACKAGE_VERSION = "4.4.0-BUSINESS-NETWORK"',
         '@bot.tree.command(name="настроить_банк"',
         "self.add_view(ConfigPanelView(self))",
         "discord.ui.LayoutView",
@@ -62,6 +62,7 @@ for filename, markers in required_markers.items():
             errors.append(f"В {filename} отсутствует обязательный элемент: {marker}")
 
 for forbidden in [
+    "fine_issuers",
     "BANK_SETTING_GROUPS",
     'custom_id="ffcfg:v400:host-settings"',
     "Discord-конфиг отключён",
@@ -76,4 +77,4 @@ if errors:
         print("-", error)
     raise SystemExit(1)
 
-print("OK: пакет 4.4.0 прошёл проверку, скрывает ID штрафов и не содержит повторного открытия или продвижения бизнеса.")
+print("OK: пакет 4.4.0 прошёл проверку, сохраняет Discord config-панель и поддерживает сеть магазинов.")

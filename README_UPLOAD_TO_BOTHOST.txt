@@ -1,4 +1,4 @@
-FUNFERNUS BANK BOT 4.4.0
+FUNFERNUS BANK BOT 4.2.0
 
 1. Загрузите содержимое папки discord-bot в корень проекта бота.
 2. Скопируйте .env.example в .env и заполните значения.
@@ -16,7 +16,6 @@ TECHNICAL_BOT_ID
 Необязательные:
 BRIDGE_TIMEOUT_SECONDS=25
 CONFIG_CHANNEL_ID=ID_КАНАЛА_CONFIG
-SERVER_TIMEZONE=Europe/Moscow
 
 CONFIG_CHANNEL_ID позволяет автоматически восстановить панель config после запуска. Вместо него можно один раз выполнить /настроить_банк.
 
