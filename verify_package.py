@@ -38,7 +38,7 @@ texts = {
 
 required_markers = {
     "bot.py": [
-        'BOT_PACKAGE_VERSION = "4.4.0-BUSINESS-NETWORK"',
+        'BOT_PACKAGE_VERSION = "4.4.1-LINKFIX"',
         '@bot.tree.command(name="настроить_банк"',
         "self.add_view(ConfigPanelView(self))",
         "discord.ui.LayoutView",
@@ -50,8 +50,9 @@ required_markers = {
         "business/upgrades/categories/buy",
         "business/upgrades/tax/buy",
         "FineAdminModal",
+        "normalize_link_code",
     ],
-    "discord_bus.py": ["fine_admin_cancel", 'resolver("bridge")'],
+    "discord_bus.py": ["fine_admin_cancel", 'resolver("bridge")', "link_not_found_tasks"],
     "runtime_settings.py": ["government_fines", '"admins"'],
     "banner_files.py": ["save_banner_attachment", "attachment://", "BANNER_DIRECTORY"],
 }
@@ -77,4 +78,4 @@ if errors:
         print("-", error)
     raise SystemExit(1)
 
-print("OK: пакет 4.4.0 прошёл проверку, сохраняет Discord config-панель и поддерживает сеть магазинов.")
+print("OK: пакет 4.4.1 прошёл проверку, исправляет привязку и поддерживает сеть магазинов.")

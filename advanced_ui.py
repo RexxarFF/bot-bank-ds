@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from datetime import datetime, timezone
 from typing import Any
@@ -28,6 +29,20 @@ THEME_LABELS = {
     "BLACK": "Чёрная",
 }
 
+
+
+
+def normalize_link_code(value: Any) -> str:
+    digits: list[str] = []
+    for char in str(value or ""):
+        try:
+            digits.append(str(unicodedata.digit(char)))
+        except (TypeError, ValueError):
+            continue
+    result = "".join(digits)
+    if 0 < len(result) < 6:
+        result = result.zfill(6)
+    return result
 
 def money(value: Any) -> str:
     try:
@@ -147,7 +162,7 @@ class OwnedView(discord.ui.View):
 
 
 class LinkCodeModal(discord.ui.Modal, title="Получение доступа к банку"):
-    code = discord.ui.TextInput(label="Код из Minecraft", placeholder="Код из /discordshop link", min_length=4, max_length=12)
+    code = discord.ui.TextInput(label="Код из Minecraft", placeholder="Шестизначный код из /discordshop link", min_length=1, max_length=20)
 
     def __init__(self, client: Any) -> None:
         super().__init__(timeout=300)
@@ -156,9 +171,16 @@ class LinkCodeModal(discord.ui.Modal, title="Получение доступа �
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
+            code = normalize_link_code(self.code.value)
+            if len(code) != 6:
+                await interaction.followup.send(
+                    embed(self.client, "Некорректный код", "Введите шестизначный код, полученный командой `/discordshop link`.", error=True),
+                    ephemeral=True,
+                )
+                return
             data = await self.client.api.call("/api/v1/link", method="POST", payload={
                 "discord_id": str(interaction.user.id),
-                "code": self.code.value.strip(),
+                "code": code,
             }, retries=0)
             _, role_text = await grant_bank_role(self.client, interaction.user.id)
             text = f"Minecraft: **{data.get('minecraftName', '—')}**\n{role_text}"

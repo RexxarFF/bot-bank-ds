@@ -76,6 +76,9 @@ class FunFernusApi:
         self.technical_bot_id = technical_bot_id
         self.timeout = max(5.0, timeout)
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self.pending_operations: dict[str, str] = {}
+        self.link_not_found_tasks: dict[str, asyncio.Task[None]] = {}
+        self.link_not_found_responses: dict[str, dict[str, Any]] = {}
         self.assemblies: dict[str, Assembly] = {}
         self.cleanup_task: asyncio.Task[None] | None = None
 
@@ -91,10 +94,15 @@ class FunFernusApi:
             except asyncio.CancelledError:
                 pass
             self.cleanup_task = None
+        for task in self.link_not_found_tasks.values():
+            task.cancel()
+        self.link_not_found_tasks.clear()
+        self.link_not_found_responses.clear()
         for future in self.pending.values():
             if not future.done():
                 future.set_exception(ApiError("BOT_SHUTDOWN", "Discord-бот выключается."))
         self.pending.clear()
+        self.pending_operations.clear()
 
 
     def set_channel_id(self, channel_id: int) -> None:
@@ -148,6 +156,7 @@ class FunFernusApi:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self.pending[request_id] = future
+        self.pending_operations[request_id] = operation
         envelope = json.dumps({"operation": operation, "payload": payload}, ensure_ascii=False, separators=(",", ":"))
         messages = self._encode("REQ", request_id, envelope)
 
@@ -167,6 +176,11 @@ class FunFernusApi:
             return response.get("data")
         finally:
             self.pending.pop(request_id, None)
+            self.pending_operations.pop(request_id, None)
+            self.link_not_found_responses.pop(request_id, None)
+            task = self.link_not_found_tasks.pop(request_id, None)
+            if task is not None:
+                task.cancel()
 
     async def handle_message(self, message: discord.Message) -> None:
         if not self.channel_id or message.channel.id != self.channel_id:
@@ -198,8 +212,40 @@ class FunFernusApi:
             LOG.warning("Повреждённый ответ Discord-моста: %s", exc)
             return
         future = self.pending.get(request_id)
-        if future is not None and not future.done():
-            future.set_result(response)
+        if future is None or future.done():
+            return
+
+        operation = self.pending_operations.get(request_id, "")
+        response_code = str(response.get("code", ""))
+        # Если в одном техническом канале случайно слушают несколько Bridge,
+        # чужой сервер может первым ответить CODE_NOT_FOUND. Для привязки
+        # ждём несколько секунд: успешный ответ правильного сервера имеет приоритет.
+        if operation == "link" and not response.get("ok", False) and response_code == "CODE_NOT_FOUND":
+            self.link_not_found_responses[request_id] = response
+            if request_id not in self.link_not_found_tasks:
+                self.link_not_found_tasks[request_id] = asyncio.create_task(
+                    self._resolve_link_not_found_later(request_id)
+                )
+            return
+
+        task = self.link_not_found_tasks.pop(request_id, None)
+        if task is not None:
+            task.cancel()
+        self.link_not_found_responses.pop(request_id, None)
+        future.set_result(response)
+
+    async def _resolve_link_not_found_later(self, request_id: str) -> None:
+        try:
+            await asyncio.sleep(3.0)
+            future = self.pending.get(request_id)
+            response = self.link_not_found_responses.get(request_id)
+            if future is not None and not future.done() and response is not None:
+                future.set_result(response)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self.link_not_found_tasks.pop(request_id, None)
+            self.link_not_found_responses.pop(request_id, None)
 
     async def _send_messages(self, messages: list[str]) -> None:
         # После изменения конфигурации или перезапуска всегда берём актуальный ID

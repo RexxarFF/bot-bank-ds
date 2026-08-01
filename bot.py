@@ -31,7 +31,7 @@ from discord_bus import ApiError, FunFernusApi
 from env import Env, EnvError
 from runtime_settings import RuntimeSettings
 
-BOT_PACKAGE_VERSION = "4.4.0-BUSINESS-NETWORK"
+BOT_PACKAGE_VERSION = "4.4.1-LINKFIX"
 ENV = Env.load()
 try:
     ENV.validate()
